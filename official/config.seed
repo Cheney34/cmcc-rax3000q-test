@@ -1,0 +1,53 @@
+# ============================================================================
+# 轨道 A 种子配置：OpenWrt 官方 main (= snapshot 体系) / qualcommax / ipq50xx
+#                 设备 cmcc_rax3000q (CMCC RAX3000Q / RAX3000QY)
+#
+# ★ 铁律：这里只写「用户态包」，绝对不要写 CONFIG_PACKAGE_kmod-* 。
+#   原因：内核配置一变，include/kernel-defaults.mk 算出来的 .vermagic 就变，
+#   而官方源里每个 kmod-* 都带 `kernel (=版本~vermagic-r)` 依赖 → 全部装不上。
+#   目标默认已经带的 kmod（kmod-ath11k-ahb / kmod-qca-nss-dp / kmod-nft-offload /
+#   kmod-usb3 / kmod-gpio-button-hotplug / kmod-leds-gpio / ppp 相关等）不用在这里重复。
+#
+# ★ 无线固件包（ath11k-firmware-* / ipq-wifi-*）由 workflow 自动探测后追加，
+#   不写死在这里，避免上游改名导致 defconfig 报错。
+# ============================================================================
+
+# ---------------------------------------------------------------- 系统基础
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_luci-ssl-mbedtls=y
+CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-app-package-manager=y
+CONFIG_PACKAGE_luci-proto-ipv6=y
+CONFIG_PACKAGE_luci-proto-ppp=y
+CONFIG_PACKAGE_luci-proto-static=y
+CONFIG_PACKAGE_luci-proto-dhcp=y
+
+# ------------------------------------------------- LuCI 中文（全中文界面）
+CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-package-manager-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-commands-zh-cn=y
+CONFIG_PACKAGE_luci-i18n-ppp-zh-cn=y
+
+# ------------------------------------------------------------------ 无线
+CONFIG_PACKAGE_wpad-mbedtls=y
+
+# ------------------------------------------------------- Portal 网页认证
+# openNDS：默认「点击继续即放行」（一键上网），打开 login_option_enabled 后有用户名/邮箱表单。
+# 它是 25.12/main 官方 feed 里唯一明确 nftables 的 portal，自带 MHD 网页服务，不需要 LuCI 应用。
+CONFIG_PACKAGE_opennds=y
+CONFIG_PACKAGE_libmicrohttpd-no-ssl=y
+# 想用 nftset 白名单（域名免认证）时需要 full 版 dnsmasq（会自动替换默认 dnsmasq）
+CONFIG_PACKAGE_dnsmasq-full=y
+
+# ------------------------------------------------------------ IPv6 相关
+# odhcp6c / odhcpd-ipv6only 已在 target 默认包内；这里只补 LuCI 侧与诊断工具
+CONFIG_PACKAGE_luci-proto-ipv6=y
+CONFIG_PACKAGE_iputils-ping=y
+CONFIG_PACKAGE_iputils-traceroute6=y
+
+# ------------------------------------------------------------ 常用小工具
+# 精简优先，只保留排障必备
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ethtool=y

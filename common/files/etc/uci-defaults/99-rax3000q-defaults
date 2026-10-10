@@ -1,0 +1,71 @@
+#!/bin/sh
+# RAX3000Q / RAX3000QY 首次启动默认值（两条轨道共用）
+# OpenWrt 会在首次启动执行 /etc/uci-defaults/* 然后删除这些脚本。
+# 全部操作都写成幂等 + 容错，缺失的 section 不会导致失败。
+
+# ---------- 1. LuCI 中文 + 主机名 + 时区 ----------
+uci -q set luci.main.lang='zh-cn'
+uci -q commit luci
+
+uci -q set system.@system[0].hostname='RAX3000Q'
+uci -q set system.@system[0].timezone='CST-8'
+uci -q set system.@system[0].zonename='Asia/Shanghai'
+uci -q set system.@system[0].conloglevel='8'
+uci -q set system.@system[0].cronloglevel='9'
+uci -q commit system
+
+# ---------- 2. IPv6 ----------
+# WAN6：向运营商要地址 + 要前缀（PD），自动跟随 wan 的物理设备
+if uci -q get network.wan >/dev/null 2>&1; then
+	uci -q set network.wan6='interface'
+	uci -q set network.wan6.device='@wan'
+	uci -q set network.wan6.proto='dhcpv6'
+	uci -q set network.wan6.reqaddress='try'
+	uci -q set network.wan6.reqprefix='auto'
+	uci -q set network.wan6.norelease='1'
+	uci -q commit network
+fi
+
+# LAN：RA + DHCPv6（M/O 位置位，下游 Windows/手机都能拿到 v6）
+uci -q set dhcp.lan.dhcpv6='server'
+uci -q set dhcp.lan.ra='server'
+uci -q set dhcp.lan.ra_slaac='1'
+uci -q set dhcp.lan.ra_flags='managed-config' 'other-config'
+uci -q set dhcp.lan.ndp='relay' 2>/dev/null
+uci -q set dhcp.lan.dhcpv6='server'
+uci -q commit dhcp
+
+# ip6tables/nftables 允许 ICMPv6 与 DHCPv6（默认已允许，这里兜底）
+if uci -q get firewall.@zone[0] >/dev/null 2>&1; then
+	uci -q set firewall.@zone[0].family='any' 2>/dev/null
+fi
+uci -q commit firewall 2>/dev/null
+
+# ---------- 3. 流量卸载 ----------
+# flow_offloading=1      : 软件 flow offloading，走 nftables flowtable，千兆以内够用
+# flow_offloading_hw=0   : 关掉硬件卸载。官方主线没有 IPQ5018 的硬件卸载引擎
+#                          （IPQ5018 没有 PPE 块，NSS 栈也没有合并进官方），
+#                          开了只会让 fw4 往 flowtable 里塞不支持的 hw flag（部分内核会报错），
+#                          所以这里明确关掉。轨道 B(QSDK/NSS) 想用 hw offload 时自己开。
+if uci -q get firewall.@defaults[0] >/dev/null 2>&1; then
+	uci -q set firewall.@defaults[0].flow_offloading='1'
+	uci -q set firewall.@defaults[0].flow_offloading_hw='0'
+fi
+uci -q commit firewall 2>/dev/null
+
+# ---------- 4. 常用 sysctl（IPv6 转发、节能关闭）----------
+cat > /etc/sysctl.d/99-rax3000q.conf <<'EOF'
+net.ipv6.conf.all.forwarding=1
+net.ipv6.conf.default.forwarding=1
+# Wi-Fi 低延迟
+net.core.netdev_max_backlog=1000
+EOF
+
+# ---------- 5. MAC 覆盖（仅当 /etc/mac_base 存在）----------
+[ -x /usr/sbin/rax-mac ] && /usr/sbin/rax-mac apply
+
+# ---------- 6. 引导用户设密码 ----------
+uci -q set system.@system[0].notes='默认 root 密码为空，请立即在「系统 → 管理权」设置密码'
+
+uci -q commit system 2>/dev/null
+exit 0

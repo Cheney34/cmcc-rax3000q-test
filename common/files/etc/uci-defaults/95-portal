@@ -1,0 +1,67 @@
+#!/bin/sh
+# =============================================================================
+# 内置 Portal 网页认证（openNDS）首次启动配置 —— 三条轨道共用
+#
+# 默认模式：Dynamic Click to Continue（一键上网）
+#   手机/电脑连上 LAN/Wi-Fi 后，被 openNDS 的 MHD 网页服务拦到一个认证页，
+#   点「继续」即放行，记录到 /tmp/ndslog/ndslog.log。
+#
+# 改成「用户名 / 邮箱登录」：把下面 login_option_enabled 改成 '2'
+# 改成自定义 ThemeSpec 页面：          改成 '3' 并设 themespec_path
+# 临时关闭 portal：
+#   uci set opennds.@opennds[0].enabled='0'; uci commit opennds; /etc/init.d/opennds restart
+#
+# 配置项名称依据官方文档 https://opennds.readthedocs.io/en/stable/config.html
+# （openNDS v10.3.x；package name: opennds，来自 routing feed / main 的 packages feed）
+# =============================================================================
+[ -f /etc/config/opennds ] || exit 0
+
+uci -q set opennds.@opennds[0].enabled='1'
+uci -q set opennds.@opennds[0].gatewayinterface='br-lan'
+uci -q set opennds.@opennds[0].gatewayname='RAX3000Q'
+# 关掉 gatewayfqdn：默认值 status.client 会把网关 80 端口劫持到 portal 状态页，
+# 导致 http://192.168.1.1 打不开 LuCI。设为 disable 后 LuCI 仍可从 LAN 访问。
+uci -q set opennds.@opennds[0].gatewayfqdn='disable'
+# 1=点击继续（一键上网） 2=用户名/邮箱登录 3=自定义 ThemeSpec
+uci -q set opennds.@opennds[0].login_option_enabled='1'
+
+# firewall4(nftables) 重启时让 openNDS 重新插入自己的 nft 规则（默认就是 1，这里显式写死）
+uci -q set opennds.@opennds[0].fwhook_enabled='1'
+# DHCP option 114 / RFC8910，让新手机主动询问 captive portal
+uci -q set opennds.@opennds[0].dhcp_default_url_enable='1'
+uci -q set opennds.@opennds[0].allow_preemptive_authentication='1'
+
+# 会话/空闲超时（分钟）
+uci -q set opennds.@opennds[0].sessiontimeout='720'
+uci -q set opennds.@opennds[0].preauthidletimeout='30'
+uci -q set opennds.@opennds[0].authidletimeout='120'
+# 本机内存紧张（256 MiB），把单页上限压小一点
+uci -q set opennds.@opennds[0].max_page_size='4096'
+
+# ---------------------------------------------------------------------------
+# 未认证用户 -> 路由器本身 的放行规则
+# 官方警告：一旦自己加了可选条目，DNS/DHCP 必须显式列出，否则会「软砖」
+# （客户端拿不到 IP / 解析不了域名，连认证页都打不开）。
+# 22/80/443 放行是为了让你自己始终能进 LuCI 和 SSH 救砖。
+# ---------------------------------------------------------------------------
+uci -q delete opennds.@opennds[0].users_to_router
+for rule in \
+    'allow tcp port 53' \
+    'allow udp port 53' \
+    'allow udp port 67' \
+    'allow tcp port 22' \
+    'allow tcp port 80' \
+    'allow tcp port 443'
+do
+    uci -q add_list opennds.@opennds[0].users_to_router="$rule"
+done
+
+# 想让某些域名在认证前就能访问（白名单）：取消注释并改成你的域名
+# uci -q add_list opennds.@opennds[0].walledgarden_fqdn_list='example.com'
+
+uci -q commit opennds
+
+# 开机自启（不在这里 start —— uci-defaults 阶段网络还没完全起来）
+/etc/init.d/opennds enable 2>/dev/null || true
+
+exit 0

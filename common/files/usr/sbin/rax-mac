@@ -1,0 +1,123 @@
+#!/bin/sh
+# rax-mac —— RAX3000Q / RAX3000QY 的 MAC 地址派生与覆盖工具
+#
+# 设计原则：**默认不写死 MAC**。
+#   只有 /etc/mac_base 存在时才会覆盖，避免「所有刷同一份固件的机器撞 MAC」。
+#
+# 用法：
+#   rax-mac show                  显示当前 LAN / WAN / radio0 / radio1 的 MAC
+#   rax-mac set AA:BB:CC:DD:EE:00 写入基准 MAC 到 /etc/mac_base 并立即派生
+#   rax-mac apply                 按 /etc/mac_base 重新派生（幂等，可反复执行）
+#   rax-mac clear                 删除 /etc/mac_base（随后重启恢复硬件自带 MAC）
+#
+# 派生约定（基址 + 偏移，全部取最后一字节，溢出回绕）：
+#   LAN = base+0    WAN = base+1    radio0(2.4G) = base+2    radio1(5G) = base+3
+# 可用环境变量覆盖偏移：OFF_LAN / OFF_WAN / OFF_WIFI0 / OFF_WIFI1
+
+BASE_FILE="/etc/mac_base"
+OFF_LAN="${OFF_LAN:-0}"
+OFF_WAN="${OFF_WAN:-1}"
+OFF_WIFI0="${OFF_WIFI0:-2}"
+OFF_WIFI1="${OFF_WIFI1:-3}"
+
+normalize() {
+	# 去掉分隔符并转大写，输出 12 位十六进制
+	printf '%s' "$1" | tr 'a-f' 'A-F' | tr -d ':- \t'
+}
+
+valid_hex12() {
+	[ ${#1} -eq 12 ] || return 1
+	case "$1" in
+		*[!0-9A-F]*) return 1 ;;
+	esac
+	return 0
+}
+
+derive() {
+	# $1 = 12 位十六进制基址, $2 = 偏移
+	_pfx=$(printf '%s' "$1" | cut -c1-10)
+	_last=$(printf '%s' "$1" | cut -c11-12)
+	_v=$(( 0x$_last + $2 ))
+	[ "$_v" -gt 255 ] && _v=$(( _v - 256 ))
+	[ "$_v" -lt 0 ] && _v=$(( _v + 256 ))
+	_out=""
+	_i=0
+	while [ "$_i" -lt 5 ]; do
+		_seg=$(printf '%s' "$_pfx" | cut -c$(( _i * 2 + 1 ))-$(( _i * 2 + 2 )))
+		if [ -z "$_out" ]; then
+			_out="$_seg"
+		else
+			_out="$_out:$_seg"
+		fi
+		_i=$(( _i + 1 ))
+	done
+	printf '%s:%02X' "$_out" "$_v"
+}
+
+do_apply() {
+	[ -s "$BASE_FILE" ] || { echo "rax-mac: $BASE_FILE 不存在，跳过覆盖"; return 0; }
+	_base=$(normalize "$(cat "$BASE_FILE")")
+	valid_hex12 "$_base" || { echo "rax-mac: $BASE_FILE 内容不是合法 MAC: $(cat "$BASE_FILE")"; return 1; }
+
+	_mlan=$(derive "$_base" "$OFF_LAN")
+	_mwan=$(derive "$_base" "$OFF_WAN")
+	_mw0=$(derive "$_base" "$OFF_WIFI0")
+	_mw1=$(derive "$_base" "$OFF_WIFI1")
+
+	if uci -q get network.lan >/dev/null 2>&1; then
+		uci -q set network.lan.macaddr="$_mlan"
+	fi
+	if uci -q get network.wan >/dev/null 2>&1; then
+		uci -q set network.wan.macaddr="$_mwan"
+	fi
+	uci -q commit network
+
+	for _sec in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.]*\)=wifi-iface$/\1/p'); do
+		_dev=$(uci -q get "wireless.$_sec.device")
+		case "$_dev" in
+			radio0) _m="$_mw0" ;;
+			*)      _m="$_mw1" ;;
+		esac
+		uci -q set "wireless.$_sec.macaddr=$_m"
+	done
+	uci -q commit wireless
+
+	echo "rax-mac: LAN=$_mlan WAN=$_mwan radio0=$_mw0 radio1=$_mw1"
+	echo "rax-mac: 已写入 uci；接口生效可执行 'wifi reload; /etc/init.d/network reload'"
+	return 0
+}
+
+do_show() {
+	echo "若已设置 /etc/mac_base : $(cat "$BASE_FILE" 2>/dev/null || echo '(未设置)')"
+	echo "--- 当前 uci 中的 MAC ---"
+	echo "LAN   : $(uci -q get network.lan.macaddr || echo '(硬件默认)')"
+	echo "WAN   : $(uci -q get network.wan.macaddr || echo '(硬件默认)')"
+	for _sec in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.]*\)=wifi-iface$/\1/p'); do
+		_dev=$(uci -q get "wireless.$_sec.device")
+		echo "$_dev ($_sec): $(uci -q get wireless.$_sec.macaddr || echo '(硬件默认)')"
+	done
+}
+
+case "$1" in
+	set)
+		[ -n "$2" ] || { echo "用法: rax-mac set AA:BB:CC:DD:EE:00"; exit 1; }
+		_b=$(normalize "$2")
+		valid_hex12 "$_b" || { echo "rax-mac: 非法 MAC: $2"; exit 1; }
+		printf '%s\n' "$_b" > "$BASE_FILE"
+		do_apply
+		;;
+	apply)
+		do_apply
+		;;
+	clear)
+		rm -f "$BASE_FILE"
+		echo "rax-mac: 已删除 $BASE_FILE（uci 中已有值不会自动清掉，可用 'rax-mac show' 查看）"
+		;;
+	show|"")
+		do_show
+		;;
+	*)
+		sed -n '2,20p' "$0"
+		exit 1
+		;;
+esac
